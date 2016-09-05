@@ -1,3 +1,17 @@
+/* ----------------------------------------------------------------------------
+ * "THE BEER-WARE LICENSE" (Revision 42):
+ * <lhartmann@github.com> wrote this file. As long as you retain this notice you
+ * can do whatever you want with this stuff. If we meet some day, and you think
+ * this stuff is worth it, you can buy me a beer in return. Lucas V. Hartmann
+ * ----------------------------------------------------------------------------
+ * 
+ * This is an GPIO interrupt dispatcher using FreeRTOS semaphores.
+ * 
+ * Usually just a single ISR function can be attached to all GPIOS, which makes
+ * it hard to partition code. Using semaphores for each pin sounded more logical
+ * at the time I was writing this. <LHartmann>
+ */
+
 #ifndef GPIO_FREERTOS_H
 #define GPIO_FREERTOS_H
 

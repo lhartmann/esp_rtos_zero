@@ -1,3 +1,11 @@
+/* ----------------------------------------------------------------------------
+ * "THE BEER-WARE LICENSE" (Revision 42):
+ * <lhartmann@github.com> wrote this file. As long as you retain this notice you
+ * can do whatever you want with this stuff. If we meet some day, and you think
+ * this stuff is worth it, you can buy me a beer in return. Lucas V. Hartmann
+ * ----------------------------------------------------------------------------
+ */
+
 #include <driver/gpio.h>
 #include <driver/gpio_freertos.h>
 #include <string.h>
@@ -26,7 +34,6 @@ static void gpio_rtos_interrupt_dispatcher() {
 			
 			// Level-triggered interrupts must be disabled or would reenter the ISR.
 			// User must re-enable after served.
-			if (0) {
 			pin_reg = GPIO_REG_READ(GPIO_PIN_ADDR(i));
 			switch (GPIO_PIN_SOURCE_GET(pin_reg)) {
 			case GPIO_PIN_INTR_LOLEVEL:
@@ -34,7 +41,6 @@ static void gpio_rtos_interrupt_dispatcher() {
 				pin_reg &= ~GPIO_PIN_SOURCE_MASK;
 				pin_reg |= GPIO_PIN_SOURCE_SET(GPIO_PIN_INTR_DISABLE);
 				GPIO_REG_WRITE(GPIO_PIN_ADDR(i), pin_reg);
-			}
 			}
 		}
 	}
