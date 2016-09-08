@@ -45,6 +45,10 @@
 
 int __errno;
 
+// ADC data
+#define ADC_CHANNELS 2
+uint32_t adcValue[ADC_CHANNELS];
+
 //On reception of a message, echo it back verbatim
 void myEchoWebsocketRecv(Websock *ws, char *data, int len, int flags) {
 	os_printf("EchoWs: echo, len=%d\n", len);
@@ -143,12 +147,10 @@ void mySubTask(void *nada) {
 	xSemaphoreHandle s = (xSemaphoreHandle) nada;
 
 	// HSPI Setup
-	HSPI_FreeRTOS spi(4);
-	PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO4_U, FUNC_GPIO4);
-	gpio_output_conf(0,0,1<<4,0);
-
-	gpio_rtos_register(0, s);
-
+	HSPI_FreeRTOS spi(2); // Use GPIO2 as a CS.
+	PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO2_U, FUNC_GPIO2);
+	gpio_output_conf(0,0,1<<2,0);
+	
 	while (true) {
 		xSemaphoreTake(s, portMAX_DELAY);
 
@@ -173,13 +175,14 @@ void myTask(void *pdParameters) {
 	);
 
 	// HSPI Setup
-	HSPI_FreeRTOS spi(5);
-	PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO5_U, FUNC_GPIO5);
-	gpio_output_conf(0,0,1<<5,0);
+	HSPI_FreeRTOS spi(15); // Use pin 15 as a SOFTWARE CS. Mere coincidence...
+	PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDO_U, FUNC_GPIO15); // Make it a GPIO
+	gpio_output_conf(0,0,1<<15,0); // Make it an output
 
+	portTickType lastTimeAwoken = xTaskGetTickCount();
 	while(1) {
 		// Delay 1 tick
-		vTaskDelay(1);
+		vTaskDelayUntil(&lastTimeAwoken, 1);
 
 		xSemaphoreGive(s); // Wake high priority task
 		spi.begin();       // Lock SPI mutex
@@ -194,7 +197,7 @@ void myTask(void *pdParameters) {
 		if (++i <= configTICK_RATE_HZ) continue;
 		i=0;
 
-		os_printf("myTask: Still alive...n");
+		os_printf("myTask: Still alive...\n");
 	}
 }
 
@@ -221,6 +224,75 @@ void myPseudoInterrputTask(void *nada) {
 	}
 }
 
+// ADC reader task.
+// Allows multiple variable-resistor inputs by switching GPIOs from VCC to Z.
+#define ADC_SETTLE_TICKS   5
+#define ADC_SETTLE_DROP   64
+#define ADC_OVERSAMPLE   256
+void myMultiAdcTask(void *) {
+	// Change selector pins to GPIO mode, no pulls.
+	// GPIO4
+	PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO4_U, FUNC_GPIO4);
+	CLEAR_PERI_REG_MASK(PERIPHS_IO_MUX_GPIO4_U, PERIPHS_IO_MUX_PULLUP);
+	CLEAR_PERI_REG_MASK(PERIPHS_IO_MUX_GPIO4_U, PERIPHS_IO_MUX_PULLDWN);
+	// GPIO5
+	PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO5_U, FUNC_GPIO5);
+	CLEAR_PERI_REG_MASK(PERIPHS_IO_MUX_GPIO5_U, PERIPHS_IO_MUX_PULLUP);
+	CLEAR_PERI_REG_MASK(PERIPHS_IO_MUX_GPIO5_U, PERIPHS_IO_MUX_PULLDWN);
+	
+	// Bit masks for each selector pin
+	const uint16_t sel[ADC_CHANNELS] = {
+		BIT4, BIT5
+	};
+	
+	// Set all selectors to inputs.
+	for (int i=0; i<ADC_CHANNELS; ++i) {
+		gpio_output_conf(0,0,0,sel[i]);
+	}
+	
+	// Iterate once per second.
+	portTickType lastTimeAwoken = xTaskGetTickCount();
+	while (true) {
+		vTaskDelayUntil(&lastTimeAwoken, configTICK_RATE_HZ);
+		
+		// Read all channels
+		uint32_t adc[ADC_CHANNELS];
+		double rx[ADC_CHANNELS];
+		for (int ch=0; ch < ADC_CHANNELS; ++ch) {
+			// Set selector to output high
+			gpio_output_conf(sel[ch], 0, sel[ch], 0);
+			
+			// Delay 2 ticks to let ADC voltage settle
+			vTaskDelay(ADC_SETTLE_TICKS);
+			
+			for (int i=0; i<ADC_SETTLE_DROP; ++i) system_adc_read();
+			
+			// Read ADC with oversampling
+			uint32_t data = 0;
+			for (int i=0; i<ADC_OVERSAMPLE; ++i) data += system_adc_read();
+			adc[ch] = data;
+			
+			// Set selector to input, high-Z
+			gpio_output_conf(0, 0, 0, sel[ch]);
+			
+			// Resistor divider ratio:
+			// Rx = (ADC_MAX / (ADC*Vref) * Vi * R14 / (R14+R13) - 1) * Rm
+			rx[ch] = (256.*1023. / (adc[ch]*1.) * 3.3 * 100e3 / (100e3+220e3) - 1) * 1e3;
+		}
+		
+		// Copy data to public buffer (at once)
+		portENTER_CRITICAL();
+		for (int ch=0; ch<ADC_CHANNELS; ++ch) adcValue[ch] = adc[ch];
+		portEXIT_CRITICAL();
+		
+		// Just for kicks
+		portTickType dt = xTaskGetTickCount() - lastTimeAwoken;
+		os_printf("ADC: dt=%d, CH0=%d, CH1=%d, R1=%d, R2=%d\n",
+			dt, adc[0], adc[1], int(rx[0]), int(rx[1])
+		);
+	}
+}
+
 /******************************************************************************
  * FunctionName : user_init
  * Description  : entry of user application, init user function here
@@ -242,7 +314,8 @@ extern "C" void user_init(void) {
 	gpio_rtos_init();
 	spi_rtos_init(false);
 
-	if (pdPASS == xTaskCreate(
+	// SPI talk tasks
+	if (1) if (pdPASS == xTaskCreate(
 		&myTask,
 		(signed char *)"myTask",
 		1024, // unsigned portSHORT usStackDepth,
@@ -255,7 +328,8 @@ extern "C" void user_init(void) {
 		os_printf("Creating myTask failed.n");
 	}
 
-	if (pdPASS == xTaskCreate(
+	// GPIO interrupt -> semaphore
+	if (1) if (pdPASS == xTaskCreate(
 		&myPseudoInterrputTask,
 		(signed char *)"myPseudoInterrputTask",
 		1024, // unsigned portSHORT usStackDepth,
@@ -268,4 +342,17 @@ extern "C" void user_init(void) {
 		os_printf("Creating myPseudoInterrputTask failed.n");
 	}
 
+	// Multiplexed ADC test
+	if(1) if (pdPASS == xTaskCreate(
+		&myMultiAdcTask,
+		(signed char *)"myMultiAdcTask",
+		1024, // unsigned portSHORT usStackDepth,
+		0, // void *pvParameters,
+		2, // unsigned portBASE_TYPE uxPriority,
+		0 // xTaskHandle *pvCreatedTask
+	)) {
+		os_printf("Creating myMultiAdcTask succeeded.n");
+	} else {
+		os_printf("Creating myMultiAdcTask failed.n");
+	}
 }
